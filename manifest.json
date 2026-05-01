@@ -1,0 +1,11 @@
+{
+    "display_name": "llm-translator-custom (Connection Profile)",
+    "loading_order": 9,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "author": "NamelessKkang (forked from 1234anon, modified for Connection Manager)",
+    "version": "1.3.5-custom-v6-connprofile",
+    "homePage": "https://github.com/NamelessKkang/llm-translator-custom",
+    "auto_update": false
+}
