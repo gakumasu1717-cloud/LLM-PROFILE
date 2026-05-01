@@ -10,6 +10,7 @@ import {
 } from '../../../../script.js';
 
 import { extension_settings, getContext, saveMetadataDebounced } from '../../../extensions.js';
+import { SECRET_KEYS, secret_state } from '../../../secrets.js';
 import { POPUP_TYPE, callGenericPopup } from '../../../popup.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
@@ -70,9 +71,19 @@ const outgoingTypes = [autoModeOptions.ALL, autoModeOptions.USER]; // 유저 메
 
 // [수정] defaultSettings 상수 (auto_translate_new_messages 제거, auto_mode 추가)
 const defaultSettings = {
-    translation_display_mode: 'disabled',
     connection_profile: '',
-    max_tokens: 4096,
+    translation_display_mode: 'disabled',
+    llm_provider: 'openai',
+    llm_model: 'gpt-4o-mini',
+    provider_model_history: {
+        openai: 'gpt-4o-mini',
+        claude: 'claude-3-5-sonnet-20241022',
+        google: 'gemini-2.5-pro',
+        cohere: 'command',
+        vertexai: 'gemini-2.5-pro',
+        openrouter: 'google/gemini-2.5-flash-lite',
+        deepseek: 'deepseek-chat'
+    },
     custom_model: '',
     throttle_delay: '0',
     show_input_translate_button: false,
@@ -84,6 +95,9 @@ const defaultSettings = {
     hide_paragraph_button: true,
     hide_edit_button: false,
     hide_delete_button: true,
+    use_reverse_proxy: false,
+    reverse_proxy_url: '',
+    reverse_proxy_password: '',
     llm_prompt_chat: 'Please translate the following text to korean:',
     llm_prompt_retranslate_correction: `# 역할
 당신은 '최소 수정 원칙(Principle of Minimal Intervention)'을 따르는 번역 교정 전문가입니다. 당신의 임무는 원문의 스타일과 표현을 보존하면서, 명백한 오류만 외과수술처럼 정밀하게 수정하는 것입니다.
@@ -142,6 +156,57 @@ const defaultSettings = {
     context_exclude_last: true,
     customPrompts: [],
     presets: [],
+    temperature: 0.7,
+    max_tokens: 1000,
+    parameters: {
+        openai: {
+            max_length: 1000,
+            temperature: 0.7,
+            frequency_penalty: 0.2,
+            presence_penalty: 0.5,
+            top_p: 0.99
+        },
+        claude: {
+            max_length: 1000,
+            temperature: 0.7,
+            top_k: 0,
+            top_p: 0.99
+        },
+        cohere: {
+            max_length: 1000,
+            temperature: 0.7,
+            frequency_penalty: 0,
+            presence_penalty: 0,
+            top_k: 0,
+            top_p: 0.99
+        },
+        google: {
+            max_length: 1000,
+            temperature: 0.7,
+            top_k: 0,
+            top_p: 0.99
+        },
+        vertexai: {
+            max_length: 1000,
+            temperature: 0.7,
+            top_k: 0,
+            top_p: 0.99
+        },
+        openrouter: {
+            max_length: 1000,
+            temperature: 0.7,
+            frequency_penalty: 0.2,
+            presence_penalty: 0.5,
+            top_p: 0.99
+        },
+        deepseek: {
+            max_length: 4000, 
+            temperature: 0.5,  
+            frequency_penalty: 0,
+            presence_penalty: 0,
+            top_p: 1
+        }
+    }
 };
 
 // 기본 설정 로드, UI 초기화
@@ -167,10 +232,31 @@ function loadSettings() {
         saveSettingsDebounced();
     }
     
-    // 연결 프로필 초기화
-    if (!extensionSettings.connection_profile) {
-        extensionSettings.connection_profile = '';
+    // 2. 파라미터 객체 초기화 (없으면 통째로 생성)
+    if (!extensionSettings.parameters) {
+        extensionSettings.parameters = defaultSettings.parameters;
     }
+    
+    // 3. OpenRouter 파라미터가 없으면 기본값에서 복사
+    if (!extensionSettings.parameters.openrouter) {
+        extensionSettings.parameters.openrouter = defaultSettings.parameters.openrouter;
+    }
+
+    if (!extensionSettings.parameters.deepseek) {
+        extensionSettings.parameters.deepseek = defaultSettings.parameters.deepseek;
+    }
+	
+    // 4. 공급자 사용 이력 초기화
+    if (!extensionSettings.provider_model_history) {
+        extensionSettings.provider_model_history = defaultSettings.provider_model_history;
+    }
+    if (!extensionSettings.provider_model_history.openrouter) {
+        extensionSettings.provider_model_history.openrouter = defaultSettings.provider_model_history.openrouter;
+    }
+
+    // 현재 선택된 공급자와 프롬프트를 UI에 설정
+    const currentProvider = extensionSettings.llm_provider;
+    $('#llm_provider').val(currentProvider);
 
     // 숨겨진 텍스트 영역들에 각 프롬프트 값 설정
     $('#llm_prompt_chat').val(extensionSettings.llm_prompt_chat);
@@ -180,13 +266,18 @@ function loadSettings() {
     $('#llm_prompt_input').val(extensionSettings.llm_prompt_input);
     $('#llm_prefill_content').val(extensionSettings.llm_prefill_content);
 
-    // 연결 프로필 드롭다운 초기화
-    initConnectionProfileDropdown();
+    // 현재 공급자의 파라미터 불러오기
+    updateParameterVisibility(currentProvider);
+    loadParameterValues(currentProvider);
 
-    // Max Tokens 슬라이더 초기화
-    const maxTokens = extensionSettings.max_tokens || 4096;
-    $('#llm_max_tokens_slider').val(maxTokens);
-    $('#llm_max_tokens').val(maxTokens);
+    // 현재 공급자의 마지막 사용 모델 불러오기
+    updateModelList();
+
+    // 연결 프로필 초기화
+    if (!extensionSettings.connection_profile) {
+        extensionSettings.connection_profile = '';
+    }
+    initConnectionProfileDropdown();
 
     // 프리필 사용 여부 로드
     $('#llm_prefill_toggle').prop('checked', extensionSettings.llm_prefill_toggle);
@@ -209,6 +300,10 @@ function loadSettings() {
     $('#llm_context_include_user').prop('checked', extensionSettings.context_include_user);
     $('#llm_context_exclude_last').prop('checked', extensionSettings.context_exclude_last !== false);
 
+    // 리버스 프록시 설정 로드
+    $('#llm_use_reverse_proxy').prop('checked', extensionSettings.use_reverse_proxy);
+    $('#llm_reverse_proxy_url').val(extensionSettings.reverse_proxy_url);
+    $('#llm_reverse_proxy_password').val(extensionSettings.reverse_proxy_password);
 
     // 아이콘 표시/숨김 설정 로드
     $('#hide_legacy_translate_button').prop('checked', extensionSettings.hide_legacy_translate_button);
@@ -275,15 +370,23 @@ function saveRulePrompt() {
 // 프롬프트 관리는 이제 PromptManager 클래스에서 처리됩니다
 
 
+
+// 리버스 프록시 설정 저장
+function saveReverseProxySettings() {
+    extensionSettings.use_reverse_proxy = $('#llm_use_reverse_proxy').is(':checked');
+    extensionSettings.reverse_proxy_url = $('#llm_reverse_proxy_url').val();
+    extensionSettings.reverse_proxy_password = $('#llm_reverse_proxy_password').val();
+    saveSettingsDebounced();
+}
+
 // 연결 프로필 드롭다운 초기화
 function initConnectionProfileDropdown() {
     const context = getContext();
     if (!context.ConnectionManagerRequestService) {
-        console.warn('[LLM Translator] ConnectionManagerRequestService를 사용할 수 없습니다. SillyTavern을 최신 버전으로 업데이트해주세요.');
-        toastr.error('Connection Manager를 사용할 수 없습니다. SillyTavern을 업데이트해주세요.');
+        console.warn('[LLM Translator] ConnectionManagerRequestService를 사용할 수 없습니다.');
         return;
     }
-    
+
     context.ConnectionManagerRequestService.handleDropdown(
         '#llm_connection_profile',
         extensionSettings.connection_profile,
@@ -294,6 +397,261 @@ function initConnectionProfileDropdown() {
     );
 }
 
+// 파라미터 섹션 표시/숨김
+function updateParameterVisibility(provider) {
+    // 모든 파라미터 그룹 숨기기
+    $('.parameter-group').hide();
+    
+    // 선택된 공급자의 파라미터 그룹만 표시
+    if (provider === 'openrouter' || provider === 'deepseek') {
+        // [추가] OpenRouter는 OpenAI 파라미터 UI를 공유함
+        $('.openai_params').show();
+    } else {
+        $(`.${provider}_params`).show();
+    }
+}
+
+// 선택된 공급자의 파라미터 값을 입력 필드에 로드
+// 선택된 공급자의 파라미터 값을 입력 필드에 로드
+function loadParameterValues(provider) {
+    // 1. [데이터 소스] 현재 선택된 공급자(OpenRouter 등)의 설정값을 가져옴 (독립적 관리)
+    const params = extensionSettings.parameters[provider];
+    if (!params) return;
+
+    // 2. [UI 타겟] 화면에서 조작할 요소의 클래스/ID 접미사 결정
+    // OpenRouter는 화면에 자신만의 UI가 없고 OpenAI UI를 빌려 씀
+    let targetUiSuffix = provider;
+    if (provider === 'openrouter' || provider === 'deepseek') {
+        targetUiSuffix = 'openai';
+    }
+
+    // 3. UI 요소 순회하며 값 적용
+    // 주의: 찾을 때는 targetUiSuffix(openai)를 쓰지만, 값은 params(openrouter)에서 가져옴
+    $(`.${targetUiSuffix}_params input`).each(function () {
+        const input = $(this);
+        // ID에서 접미사를 떼어내어 순수 파라미터 키(key)를 추출 (예: frequency_penalty_openai -> frequency_penalty)
+        const paramName = input.attr('id').replace(`_${targetUiSuffix}`, '');
+
+        if (params.hasOwnProperty(paramName)) {
+            const value = params[paramName];
+
+            // 슬라이더, 입력 필드 모두 업데이트
+            if (input.hasClass('neo-range-slider')) {
+                input.val(value);
+                input.next('.neo-range-input').val(value);
+            } else if (input.hasClass('neo-range-input')) {
+                input.val(value);
+                input.prev('.neo-range-slider').val(value);
+            }
+        }
+    });
+
+    // 공통 파라미터(Temperature, Max Length) 업데이트
+    ['max_length', 'temperature'].forEach(param => {
+        if (params.hasOwnProperty(param)) {
+            const value = params[param];
+            const input = $(`#${param}`);
+            if (input.length) {
+                input.val(value);
+                input.prev('.neo-range-slider').val(value);
+            }
+        }
+    });
+}
+
+// 선택된 공급자의 파라미터 값을 저장
+function saveParameterValues(provider) {
+    // 1. [데이터 타겟] 저장할 대상 객체 복사 (OpenRouter 등)
+    const params = { ...extensionSettings.parameters[provider] };
+
+    // 공통 파라미터 저장
+    params.max_length = parseInt($('#max_length').val());
+    params.temperature = parseFloat($('#temperature').val());
+
+    // 2. [UI 소스] 값을 읽어올 화면 요소 결정
+    let targetUiSuffix = provider;
+    if (provider === 'openrouter' || provider === 'deepseek') {
+        targetUiSuffix = 'openai';
+    }
+
+    // 3. UI에서 값을 읽어서 params 객체에 저장
+    // 화면의 OpenAI 슬라이더 값을 읽지만, 저장은 provider(OpenRouter) 객체에 함
+    $(`.${targetUiSuffix}_params input.neo-range-input`).each(function () {
+        // ID에서 파라미터 이름 추출
+        const paramName = $(this).attr('id').replace(`_${targetUiSuffix}`, '');
+        
+        // 값 읽기 및 저장
+        params[paramName] = parseFloat($(this).val());
+    });
+
+    // 최종적으로 해당 공급자의 설정에 저장
+    extensionSettings.parameters[provider] = params;
+    saveSettingsDebounced();
+}
+
+// 공급자별 특정 파라미터 추출
+function getProviderSpecificParams(provider, params) {
+    switch (provider) {
+        case 'openai':
+        case 'openrouter':
+            return {
+                frequency_penalty: params.frequency_penalty,
+                presence_penalty: params.presence_penalty,
+                top_p: params.top_p
+            };
+        case 'claude':
+            return {
+                top_k: params.top_k,
+                top_p: params.top_p
+            };
+        case 'cohere':
+            return {
+                frequency_penalty: params.frequency_penalty,
+                presence_penalty: params.presence_penalty,
+                top_k: params.top_k,
+                top_p: params.top_p
+            };
+        case 'google':
+            return {
+                top_k: params.top_k,
+                top_p: params.top_p
+            };
+        case 'vertexai':
+            return {
+                top_k: params.top_k,
+                top_p: params.top_p
+            };
+        default:
+            return {};
+    }
+}
+
+// 선택된 공급자의 모델 목록 업데이트
+function updateModelList() {
+    const provider = $('#llm_provider').val();
+    const modelSelect = $('#llm_model');
+    modelSelect.empty();
+
+    const models = {
+        'openai': [
+            'gpt-5.2',
+            'gpt-5-mini',
+            'gpt-5-nano',
+            'chatgpt-4o-latest',
+            'gpt-4o',
+            'gpt-4o-2024-11-20',
+            'gpt-4o-2024-08-06',
+            'gpt-4o-2024-05-13',
+            'gpt-4o-mini',
+            'gpt-4o-mini-2024-07-18',
+            'o1',
+            'o1-2024-12-17',
+            'o1-preview',
+            'o1-preview-2024-09-12',
+            'o1-mini',
+            'o1-mini-2024-09-12',
+            'gpt-4-turbo',
+            'gpt-4-turbo-2024-04-09',
+            'gpt-4-turbo-preview',
+            'gpt-4-0125-preview',
+            'gpt-4-1106-preview',
+            'gpt-4',
+            'gpt-4-0613',
+            'gpt-4-0314',
+            'gpt-4-32k',
+            'gpt-3.5-turbo',
+            'gpt-3.5-turbo-0125',
+            'gpt-3.5-turbo-1106',
+            'gpt-3.5-turbo-instruct'
+        ],
+        'claude': [
+            'claude-3-5-sonnet-latest',
+            'claude-3-5-sonnet-20241022',
+            'claude-3-5-sonnet-20240620',
+            'claude-3-5-haiku-latest',
+            'claude-3-5-haiku-20241022',
+            'claude-3-opus-latest',
+            'claude-3-opus-20240229',
+            'claude-3-sonnet-20240229',
+            'claude-3-haiku-20240307',
+            'claude-2.1',
+            'claude-2.0'
+        ],
+        'google': [
+            'gemini-3-pro-preview',
+            'gemini-3-flash-preview',
+            'gemini-2.5-pro',
+            'gemini-2.5-flash',
+            'gemini-2.5-flash-lite',
+            'gemini-2.0-flash',
+            'gemini-2.0-flash-lite'
+        ],
+        'cohere': [
+            'command-r7b-12-2024',
+            'command-r-plus',
+            'command-r-plus-08-2024',
+            'command-r',
+            'command-r-08-2024',
+            'c4ai-aya-expanse-8b',
+            'c4ai-aya-expanse-32b'
+        ],
+        'vertexai': [
+            'gemini-3-pro-preview',
+            'gemini-3-flash-preview',
+            'gemini-2.5-pro',
+            'gemini-2.5-flash',
+            'gemini-2.5-flash-lite',
+            'gemini-2.0-flash',
+            'gemini-2.0-flash-lite',
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-pro',
+            'gemini-1.5-flash-latest',
+            'gemini-1.5-flash'
+        ],
+        'openrouter': [
+            'deepseek/deepseek-r1',
+            'deepseek/deepseek-chat',
+            'moonshotai/kimi-k2.5',
+            'moonshotai/kimi-k2',
+            'google/gemini-3-pro-preview',
+            'google/gemini-3-flash-preview',
+            'google/gemini-2.5-pro',
+            'google/gemini-2.5-flash',
+			'google/gemini-2.5-flash-lite',
+            'anthropic/claude-3-haiku',
+            'meta-llama/llama-3-70b-instruct',
+            'microsoft/wizardlm-2-8x22b',
+			''
+        ],
+		'deepseek': [
+            'deepseek-chat',    // V3
+            'deepseek-reasoner' // R1 (추론 모델)
+        ]
+    };
+
+    const providerModels = models[provider] || [];
+    for (const model of providerModels) {
+        modelSelect.append(`<option value="${model}">${model}</option>`);
+    }
+    // 맨 아래에 custom 옵션 추가
+    modelSelect.append(`<option value="custom">⚙️ 커스텀 모델 입력</option>`);
+
+    // 해당 공급자의 마지막 사용 모델을 선택
+    const lastUsedModel = extensionSettings.provider_model_history[provider] || providerModels[0];
+    modelSelect.val(lastUsedModel);
+
+    // custom 선택시 커스텀 입력에 기존 값 표시
+    if (lastUsedModel === 'custom') {
+        $('#custom_model_container').show();
+        $('#llm_custom_model').val(extensionSettings.custom_model || '');
+    } else {
+        $('#custom_model_container').hide();
+    }
+
+    // 모델과 공급자 이력 업데이트
+    extensionSettings.llm_model = lastUsedModel;
+    extensionSettings.provider_model_history[provider] = lastUsedModel;
+}
 
 // 커스텀 플레이스홀더 치환 함수
 function substituteCustomPlaceholders(prompt, isInputTranslation = false) {
@@ -330,25 +688,98 @@ function substituteCustomPlaceholders(prompt, isInputTranslation = false) {
 }
 
 
-// API 호출 로직 (Connection Manager 연결 프로필 사용)
+// API 호출 로직 (수정됨 - API 키 검증 추가)
 async function callLLMAPI(fullPrompt) {
-    const context = getContext();
+    // ── 연결 프로필이 선택된 경우 ConnectionManager로 요청 ──
     const profileId = extensionSettings.connection_profile;
+    if (profileId) {
+        const context = getContext();
+        if (!context.ConnectionManagerRequestService) {
+            throw new Error('Connection Manager를 사용할 수 없습니다. SillyTavern을 최신 버전으로 업데이트해주세요.');
+        }
 
-    if (!profileId) {
-        throw new Error('연결 프로필이 선택되지 않았습니다. 설정에서 연결 프로필을 선택해주세요.');
+        const provider = extensionSettings.llm_provider;
+        const params = extensionSettings.parameters[provider];
+        const messages = [{ role: 'user', content: fullPrompt }];
+
+        if (extensionSettings.llm_prefill_toggle) {
+            let prefillContent = extensionSettings.llm_prefill_content || 'Understood. Here is my response:';
+            const editorElement = document.getElementById('llm_prompt_editor');
+            const selectElement = document.getElementById('prompt_select');
+            if (editorElement && selectElement && selectElement.value === 'llm_prefill_content') {
+                const currentEditorValue = editorElement.value;
+                if (currentEditorValue && currentEditorValue.trim() !== '') {
+                    prefillContent = currentEditorValue;
+                }
+            }
+            messages.push({ role: 'assistant', content: prefillContent });
+        }
+
+        const maxTokens = (params && params.max_length > 0) ? params.max_length : 4096;
+
+        try {
+            const response = await context.ConnectionManagerRequestService.sendRequest(
+                profileId,
+                messages,
+                maxTokens,
+            );
+            const result = response?.content?.trim();
+            if (!result) {
+                throw new Error('번역 응답이 비어있습니다.');
+            }
+            return result;
+        } catch (error) {
+            throw new Error(`연결 프로필 요청 실패: ${error.message}`);
+        }
     }
 
-    if (!context.ConnectionManagerRequestService) {
-        throw new Error('Connection Manager를 사용할 수 없습니다. SillyTavern을 최신 버전으로 업데이트해주세요.');
+    // ── 기존 방식 (연결 프로필 미선택 시) ──
+    const provider = extensionSettings.llm_provider;
+    // custom 선택 시 실제 커스텀 모델명 사용
+    const model = extensionSettings.llm_model === 'custom'
+        ? (extensionSettings.custom_model || '')
+        : extensionSettings.llm_model;
+    const params = extensionSettings.parameters[provider];
+
+    // API 키 검증
+    let apiKey;
+    let chatCompletionSource;
+
+    switch (provider) {
+        case 'openai':
+            apiKey = secret_state[SECRET_KEYS.OPENAI];
+            chatCompletionSource = 'openai';
+            break;
+        case 'claude':
+            apiKey = secret_state[SECRET_KEYS.CLAUDE];
+            chatCompletionSource = 'claude';
+            break;
+        case 'google':
+            apiKey = secret_state[SECRET_KEYS.MAKERSUITE];
+            chatCompletionSource = 'makersuite';
+            break;
+        case 'cohere':
+            apiKey = secret_state[SECRET_KEYS.COHERE];
+            chatCompletionSource = 'cohere';
+            break;
+        case 'vertexai':
+            apiKey = secret_state[SECRET_KEYS.VERTEXAI] || secret_state[SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT];
+            chatCompletionSource = 'vertexai';
+            break;
+        case 'openrouter':
+            apiKey = secret_state[SECRET_KEYS.OPENROUTER];
+            chatCompletionSource = 'openrouter';
+            break;
+        case 'deepseek': // [추가] OpenRouter 분기
+            apiKey = secret_state[SECRET_KEYS.DEEPSEEK];
+            chatCompletionSource = 'deepseek';
+            break;
+        default:
+            throw new Error('지원되지 않는 공급자입니다.');
     }
 
-    const profile = context.extensionSettings.connectionManager?.profiles?.find(p => p.id === profileId);
-    if (!profile) {
-        throw new Error(`연결 프로필을 찾을 수 없습니다. (ID: ${profileId})`);
-    }
-    if (!profile.api) {
-        throw new Error('선택된 연결 프로필에 API가 설정되지 않았습니다.');
+    if (!apiKey && !extensionSettings.use_reverse_proxy) {
+        throw new Error(`${provider.toUpperCase()} API 키가 설정되어 있지 않습니다.`);
     }
 
     const messages = [{ role: 'user', content: fullPrompt }];
@@ -365,29 +796,119 @@ async function callLLMAPI(fullPrompt) {
             }
         }
 
-        messages.push({ role: 'assistant', content: prefillContent });
+        const role = (provider === 'google' || provider === 'vertexai') ? 'model' : 'assistant';
+        messages.push({ role, content: prefillContent });
     }
 
-    const maxTokens = extensionSettings.max_tokens || 4096;
+    const parameters = {
+        model,
+        messages,
+        temperature: params.temperature,
+        stream: false,
+        chat_completion_source: chatCompletionSource,
+        ...getProviderSpecificParams(provider, params)
+    };
 
+    if (params.max_length > 0) {
+        parameters.max_tokens = params.max_length;
+    }
+
+    if (provider === 'vertexai') {
+        parameters.vertexai_auth_mode = 'full';
+    }
+
+    if (extensionSettings.use_reverse_proxy) {
+        parameters.reverse_proxy = extensionSettings.reverse_proxy_url;
+        parameters.proxy_password = extensionSettings.reverse_proxy_password;
+    }
+
+    let response;
     try {
-        const response = await context.ConnectionManagerRequestService.sendRequest(
-            profileId,
-            messages,
-            maxTokens,
-        );
-
-        const result = response?.content?.trim();
-        if (!result) {
-            throw new Error('번역 응답이 비어있습니다. API에서 올바른 응답을 받지 못했습니다.');
+        response = await fetch('/api/backends/chat-completions/generate', {
+            method: 'POST',
+            headers: { ...getRequestHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(parameters)
+        });
+    } catch (fetchError) {
+        // 네트워크 에러 처리
+        if (fetchError.name === 'TypeError' && fetchError.message.includes('Failed to fetch')) {
+            throw new Error('네트워크 연결에 실패했습니다. 인터넷 연결을 확인해주세요.');
         }
-        return result;
-    } catch (error) {
-        if (error.message.includes('번역 응답이 비어있습니다')) {
-            throw error;
-        }
-        throw new Error(`API 요청 실패: ${error.message}`);
+        throw new Error(`요청 실패: ${fetchError.message}`);
     }
+
+    if (!response.ok) {
+        let errorMessage = `HTTP ${response.status}`;
+
+        try {
+            const errorData = await response.json();
+            if (errorData.error && errorData.error.message) {
+                errorMessage = errorData.error.message;
+            } else if (errorData.message) {
+                errorMessage = errorData.message;
+            } else {
+                errorMessage = response.statusText || errorMessage;
+            }
+        } catch (e) {
+            errorMessage = response.statusText || errorMessage;
+        }
+
+        // 상태 코드별 구체적인 메시지
+        switch (response.status) {
+            case 401:
+                throw new Error('API 키가 잘못되었거나 권한이 없습니다.');
+            case 403:
+                throw new Error('API 접근이 거부되었습니다. API 키 권한을 확인해주세요.');
+            case 429:
+                throw new Error('API 호출 한도를 초과했습니다. 잠시 후 다시 시도해주세요.');
+            case 500:
+                throw new Error('서버 내부 오류가 발생했습니다.');
+            case 503:
+                throw new Error('서비스를 사용할 수 없습니다. 잠시 후 다시 시도해주세요.');
+            default:
+                throw new Error(errorMessage);
+        }
+    }
+
+    const data = await response.json();
+    return extractTranslationResult(data, provider);
+}
+
+// 결과 추출 로직 분리  
+function extractTranslationResult(data, provider) {
+    let result;
+    switch (provider) {
+        case 'openai':
+        case 'openrouter':
+        case 'deepseek':
+            result = data.choices?.[0]?.message?.content?.trim();
+            break;
+        case 'claude':
+            result = data.content?.[0]?.text?.trim();
+            break;
+        case 'google':
+            result = data.candidates?.[0]?.content?.trim() ||
+                data.choices?.[0]?.message?.content?.trim() ||
+                data.text?.trim();
+            break;
+        case 'cohere':
+            result = data.message?.content?.[0]?.text?.trim() ||
+                data.generations?.[0]?.text?.trim() ||
+                data.text?.trim() ||
+                data.choices?.[0]?.message?.content?.trim() ||
+                data.content?.[0]?.text?.trim();
+            break;
+        case 'vertexai':
+            result = data.candidates?.[0]?.content?.trim() ||
+                data.choices?.[0]?.message?.content?.trim() ||
+                data.text?.trim();
+            break;
+    }
+
+    if (!result) {
+        throw new Error(`번역 응답이 비어있습니다. ${provider.toUpperCase()} API에서 올바른 응답을 받지 못했습니다.`);
+    }
+    return result;
 }
 
 /**
@@ -573,9 +1094,9 @@ async function translate(text, options = {}) {
 
     } catch (error) {
         console.error('Translation error:', error);
-        // 연결 프로필 관련 오류인 경우 더 명확한 메시지 제공
-        if (error.message.includes('연결 프로필') || error.message.includes('Connection Manager')) {
-            throw new Error(`연결 설정 오류: ${error.message}`);
+        // API 키 관련 오류인 경우 더 명확한 메시지 제공
+        if (error.message.includes('API 키') || error.message.includes('설정되어 있지 않습니다')) {
+            throw new Error(`API 키 설정 오류: ${error.message}`);
         }
         // 네트워크 오류
         if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
@@ -1828,21 +2349,13 @@ function initializeEventHandlers() {
     $('#llm_translate_input_message').on('click', onTranslateInputMessageClick);
     $('#llm_translation_clear').on('click', onTranslationsClearClick);
 
-    // 설정 변경 이벤트 핸들러 (연결 프로필은 initConnectionProfileDropdown에서 처리)
-
-    // Max Tokens 슬라이더/입력 이벤트 핸들러
-    $('#llm_max_tokens_slider').on('input', function () {
-        const value = $(this).val();
-        $('#llm_max_tokens').val(value);
-        extensionSettings.max_tokens = parseInt(value);
-        saveSettingsDebounced();
-    });
-
-    $('#llm_max_tokens').on('change', function () {
-        const value = Math.min(160000, Math.max(0, parseInt($(this).val()) || 4096));
-        $(this).val(value);
-        $('#llm_max_tokens_slider').val(value);
-        extensionSettings.max_tokens = value;
+    // 설정 변경 이벤트 핸들러
+    $('#llm_provider').on('change', function () {
+        const provider = $(this).val();
+        extensionSettings.llm_provider = provider;
+        updateModelList();
+        updateParameterVisibility(provider);
+        loadParameterValues(provider);
         saveSettingsDebounced();
     });
 
@@ -1872,6 +2385,43 @@ function initializeEventHandlers() {
         saveSettingsDebounced();
     });
 
+    $('#llm_model').on('change', function () {
+        const provider = $('#llm_provider').val();
+        const selectedModel = $(this).val();
+        extensionSettings.llm_model = selectedModel;
+        extensionSettings.provider_model_history[provider] = selectedModel;
+
+        // custom 선택 시 커스텀 입력 필드 표시
+        if (selectedModel === 'custom') {
+            $('#custom_model_container').show();
+            $('#llm_custom_model').val(extensionSettings.custom_model || '');
+        } else {
+            $('#custom_model_container').hide();
+        }
+
+        saveSettingsDebounced();
+    });
+
+    // 커스텀 모델명 입력 이벤트
+    $('#llm_custom_model').on('input', function () {
+        extensionSettings.custom_model = $(this).val().trim();
+        saveSettingsDebounced();
+    });
+
+    // 프롬프트 관리는 이제 PromptManager 클래스에서 처리됩니다
+
+    // 파라미터 슬라이더 동기화
+    $('.parameter-settings input').on('input change', function () {
+        const provider = $('#llm_provider').val();
+
+        if ($(this).hasClass('neo-range-slider')) {
+            $(this).next('.neo-range-input').val($(this).val());
+        } else if ($(this).hasClass('neo-range-input')) {
+            $(this).prev('.neo-range-slider').val($(this).val());
+        }
+
+        saveParameterValues(provider);
+    });
 
     // 체크박스 이벤트 핸들러들 (단순화)
     $('#llm_translation_button_toggle').on('change', function () {
@@ -2004,6 +2554,17 @@ function initializeEventHandlers() {
         saveSettingsDebounced();
     });
 
+    // 리버스 프록시 설정들 (통합)
+    $('#llm_use_reverse_proxy, #llm_reverse_proxy_url, #llm_reverse_proxy_password').on('change input', function () {
+        saveReverseProxySettings();
+    });
+
+    $('#llm_reverse_proxy_password_show').on('click', function () {
+        const passwordInput = $('#llm_reverse_proxy_password');
+        const type = passwordInput.attr('type') === 'password' ? 'text' : 'password';
+        passwordInput.attr('type', type);
+        $(this).toggleClass('fa-eye-slash fa-eye');
+    });
 
     // 규칙 프롬프트 이벤트 핸들러
     $('#llm_rule_prompt').on('input change', saveRulePrompt);
@@ -2126,10 +2687,8 @@ function openDB() {
 // 데이터 추가 함수 수정
 async function addTranslationToDB(originalText, translation) {
     const db = await openDB();
-    const profileId = extensionSettings.connection_profile || 'unknown';
-    const context = getContext();
-    const profile = context.extensionSettings?.connectionManager?.profiles?.find(p => p.id === profileId);
-    const profileName = profile?.name || profileId;
+    const provider = extensionSettings.llm_provider;
+    const model = extensionSettings.llm_model;
 
     // UTC 시간을 ISO 문자열로 가져오기
     const utcDate = new Date();
@@ -2144,7 +2703,7 @@ async function addTranslationToDB(originalText, translation) {
         const transaction = db.transaction(STORE_NAME, 'readwrite');
         const store = transaction.objectStore(STORE_NAME);
 
-        const request = store.add({ originalText: originalText, translation: translation, provider: profileName, model: profileName, date: date });
+        const request = store.add({ originalText: originalText, translation: translation, provider: provider, model: model, date: date });
 
         request.onsuccess = (event) => {
             resolve("add success");
@@ -2301,10 +2860,8 @@ async function restoreDB(file) {
 // 데이터 업데이트 함수 수정
 async function updateTranslationByOriginalText(originalText, newTranslation) {
     const db = await openDB();
-    const profileId = extensionSettings.connection_profile || 'unknown';
-    const context = getContext();
-    const profile = context.extensionSettings?.connectionManager?.profiles?.find(p => p.id === profileId);
-    const profileName = profile?.name || profileId;
+    const provider = extensionSettings.llm_provider;
+    const model = extensionSettings.llm_model;
 
     // UTC 시간을 ISO 문자열로 가져오기
     const utcDate = new Date();
@@ -2325,7 +2882,7 @@ async function updateTranslationByOriginalText(originalText, newTranslation) {
             const record = event.target.result;
 
             if (record) {
-                const updateRequest = store.put({ ...record, translation: newTranslation, provider: profileName, model: profileName, date: date });
+                const updateRequest = store.put({ ...record, translation: newTranslation, provider: provider, model: model, date: date });
                 updateRequest.onsuccess = () => {
                     resolve();
                 };
