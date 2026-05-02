@@ -20,7 +20,7 @@ const DB_NAME = 'LLMtranslatorDB';
 const STORE_NAME = 'translations';
 const METADATA_BACKUP_KEY = 'llmTranslationCacheBackup'; // 메타데이터 백업 키
 const RULE_PROMPT_KEY = 'llmRulePrompt'; // 규칙 프롬프트 메타데이터 키
-const extensionName = "llm-translator-custom";
+const extensionName = "LLM-PROFILE";
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 const DEBUG_MODE = false; // 디버그 로그 활성화 플래그
 
@@ -273,12 +273,6 @@ function loadSettings() {
     // 현재 공급자의 마지막 사용 모델 불러오기
     updateModelList();
 
-    // 연결 프로필 초기화
-    if (!extensionSettings.connection_profile) {
-        extensionSettings.connection_profile = '';
-    }
-    initConnectionProfileDropdown();
-
     // 프리필 사용 여부 로드
     $('#llm_prefill_toggle').prop('checked', extensionSettings.llm_prefill_toggle);
 
@@ -344,6 +338,27 @@ function loadSettings() {
         // 텍스트 필드에 프롬프트 로드 (항상 실행)
         promptManager.loadPromptToEditor();
     }
+
+    // ── 연결 프로필 드롭다운 초기화 (Magic Translation 패턴) ──
+    const ctx = getContext();
+    if (ctx.ConnectionManagerRequestService) {
+        ctx.ConnectionManagerRequestService.handleDropdown(
+            '.translation_settings .llm_translator_profile',
+            extensionSettings.connection_profile,
+            (profile) => {
+                extensionSettings.connection_profile = profile?.id ?? '';
+                saveSettingsDebounced();
+            },
+        );
+
+        // Connection Profile 탭으로 이동 버튼
+        const sysSettingsButton = $('#sys-settings-button .drawer-toggle');
+        $('.translation_settings .redirect_sys_settings').on('click', function () {
+            sysSettingsButton.trigger('click');
+        });
+    } else {
+        console.warn('[LLM Translator] ConnectionManagerRequestService를 사용할 수 없습니다. SillyTavern을 업데이트해주세요.');
+    }
 }
 
 // 규칙 프롬프트 관리 함수
@@ -377,24 +392,6 @@ function saveReverseProxySettings() {
     extensionSettings.reverse_proxy_url = $('#llm_reverse_proxy_url').val();
     extensionSettings.reverse_proxy_password = $('#llm_reverse_proxy_password').val();
     saveSettingsDebounced();
-}
-
-// 연결 프로필 드롭다운 초기화
-function initConnectionProfileDropdown() {
-    const context = getContext();
-    if (!context.ConnectionManagerRequestService) {
-        console.warn('[LLM Translator] ConnectionManagerRequestService를 사용할 수 없습니다.');
-        return;
-    }
-
-    context.ConnectionManagerRequestService.handleDropdown(
-        '#llm_connection_profile',
-        extensionSettings.connection_profile,
-        (profile) => {
-            extensionSettings.connection_profile = profile?.id ?? '';
-            saveSettingsDebounced();
-        },
-    );
 }
 
 // 파라미터 섹션 표시/숨김
@@ -690,16 +687,18 @@ function substituteCustomPlaceholders(prompt, isInputTranslation = false) {
 
 // API 호출 로직 (수정됨 - API 키 검증 추가)
 async function callLLMAPI(fullPrompt) {
-    // ── 연결 프로필이 선택된 경우 ConnectionManager로 요청 ──
+    // ── 연결 프로필이 선택된 경우: Magic Translation 패턴 그대로 ──
     const profileId = extensionSettings.connection_profile;
     if (profileId) {
-        const context = getContext();
-        if (!context.ConnectionManagerRequestService) {
-            throw new Error('Connection Manager를 사용할 수 없습니다. SillyTavern을 최신 버전으로 업데이트해주세요.');
+        const ctx = getContext();
+        const profile = ctx.extensionSettings.connectionManager?.profiles?.find(p => p.id === profileId);
+        if (!profile) {
+            throw new Error(`연결 프로필을 찾을 수 없습니다 (id: ${profileId})`);
+        }
+        if (!profile.api) {
+            throw new Error('선택한 연결 프로필에 API가 설정되어 있지 않습니다.');
         }
 
-        const provider = extensionSettings.llm_provider;
-        const params = extensionSettings.parameters[provider];
         const messages = [{ role: 'user', content: fullPrompt }];
 
         if (extensionSettings.llm_prefill_toggle) {
@@ -715,22 +714,20 @@ async function callLLMAPI(fullPrompt) {
             messages.push({ role: 'assistant', content: prefillContent });
         }
 
-        const maxTokens = (params && params.max_length > 0) ? params.max_length : 4096;
+        const params = extensionSettings.parameters[extensionSettings.llm_provider];
+        const MAX_TOKENS = (params && params.max_length > 0) ? params.max_length : 4096;
 
-        try {
-            const response = await context.ConnectionManagerRequestService.sendRequest(
-                profileId,
-                messages,
-                maxTokens,
-            );
-            const result = response?.content?.trim();
-            if (!result) {
-                throw new Error('번역 응답이 비어있습니다.');
-            }
-            return result;
-        } catch (error) {
-            throw new Error(`연결 프로필 요청 실패: ${error.message}`);
+        const response = await ctx.ConnectionManagerRequestService.sendRequest(
+            profile.id,
+            messages,
+            MAX_TOKENS,
+        );
+
+        const result = response?.content?.trim();
+        if (!result) {
+            throw new Error('번역 응답이 비어있습니다.');
         }
+        return result;
     }
 
     // ── 기존 방식 (연결 프로필 미선택 시) ──

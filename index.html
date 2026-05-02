@@ -105,10 +105,18 @@
 
             <hr>
 
-            <label for="llm_connection_profile">연결 프로필 (선택 시 아래 공급자/키 대신 사용)</label>
-            <select id="llm_connection_profile" class="text_pole" title="연결 프로필을 선택하세요">
-                <option value="">-- 사용 안 함 (기존 방식) --</option>
-            </select>
+            <div class="openai_restorable flex-container">
+                <div class="title_restorable">
+                    <label>Connection Profile</label>
+                    <button
+                        class="menu_button fa-solid fa-route interactable redirect_sys_settings"
+                        title="Go to connection profile tab"
+                    ></button>
+                </div>
+                <select class="text_pole llm_translator_profile" title="Select a Connection Profile">
+                    <option value="">Select a Connection Profile</option>
+                </select>
+            </div>
 
             <label for="llm_provider">공급자</label>
             <select id="llm_provider">
